@@ -50,10 +50,9 @@ for tailness, etc.
 ### DiversityPhi (`salience/phi.py`)
 Promotes diversity relative to a library of previously generated samples:
 
-    φ(x) = [k(x, x_1), ..., k(x, x_N)]  ∈ ℝᴺ
+    φ(x) = mean([k(x, x_1), ..., k(x, x_N)])  ∈ ℝᴺ
 
-High salience when x is dissimilar from the library in many linearly
-independent directions simultaneously.
+High salience when x is dissimilar from the library.
 
 **Required context keys:** `"library"` (Tensor, N × d_in),
 optionally `"max_library_size"` (int).
