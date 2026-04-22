@@ -118,10 +118,22 @@ class DiversityPhi(PhiBase):
         self.use_tweedie = use_tweedie
 
     def forward(self, x: Tensor, t: int, context: dict) -> Tensor:
-        library = context.get("library", None)
+
+        library: Optional[Tensor] = context.get("library", None)
+        self_idx: Optional[int] = context.get("self_index", None)
 
         if library is None or library.shape[0] == 0:
-            return x.sum().unsqueeze(0) * 0.0
+            return torch.zeros(1, device=x.device)
+
+        # Exclude self if index provided
+        if self_idx is not None:
+            library = torch.cat([
+                library[:self_idx],
+                library[self_idx + 1:]
+            ], dim=0)
+
+        if library.shape[0] == 0:
+            return torch.zeros(1, device=x.device)
 
         max_N = context.get("max_library_size", None)
         if max_N is not None and library.shape[0] > max_N:
@@ -151,6 +163,27 @@ class DiversityPhi(PhiBase):
 
         # Fast scalar proxy:
         return vals.mean().unsqueeze(0)
+
+    def forward_batched(self, X: Tensor, t: int, context: dict) -> Tensor:
+        """
+        Vectorised batched forward for DiversityPhi.
+
+        Computes all N phi values simultaneously using broadcasting
+        rather than a Python loop over samples and library entries.
+
+        Handles self-exclusion via the diagonal mask rather than
+        index-based slicing.
+        """
+        # All pairwise squared distances in one shot
+        diff = X.unsqueeze(1) - X.unsqueeze(0)  # (N, N, d_in)
+        dists = (diff ** 2).sum(dim=-1)  # (N, N)
+        #print(dists.requires_grad)
+
+        # Mask out self-distances (diagonal) instead of index exclusion
+        mask = 1.0 - torch.eye(X.shape[0], device=X.device)
+        phi_vals = (dists * mask).mean(dim=-1, keepdim=True)  # (N, 1)
+
+        return phi_vals
 
 
 # ---------------------------------------------------------------------------

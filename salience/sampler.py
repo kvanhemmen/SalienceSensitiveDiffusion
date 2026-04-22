@@ -83,6 +83,19 @@ class PhiBase(ABC, nn.Module):
         """
         ...
 
+    def forward_batched(self, X: Tensor, t: int, context: dict) -> Tensor:
+        """
+        Evaluate phi for a batch of samples X of shape (N, d_in).
+        Returns (N, d_out).
+
+        Default implementation calls forward() in a loop.
+        Subclasses can override for vectorised computation.
+        """
+        return torch.stack([
+            self.forward(X[i], t, context)
+            for i in range(X.shape[0])
+        ])
+
 
 # ---------------------------------------------------------------------------
 # Salience computation
@@ -568,3 +581,240 @@ class SalientSampler:
         # Now differentiate log S w.r.t. x — this is the second derivative
         grad_log_S, = torch.autograd.grad(log_S, x)
         return grad_log_S.clamp(-100.0, 100.0).detach()
+
+    def sample_particle_grad_guided(
+            self,
+            x_T: Tensor,
+            guidance_scale: float = 1.0,
+            context: Optional[dict] = None,
+            verbose: bool = True,
+    ) -> Tensor:
+        """
+        Particle guidance: batched diversity-promoting reverse diffusion.
+
+        Maintains N particles {x_t^1, ..., x_t^N} in parallel. At each
+        reverse step, each particle is repelled from all others by adding
+        a salience gradient term to the posterior mean:
+
+            mu_t^i_guided = mu_t^i + guidance_scale * var_t * grad_{x_t^i} log S(x_t^i)
+
+        where S(x_t^i) is computed under phi with the library set to all
+        other particles at the current timestep (self excluded via self_index).
+
+        All N gradient computations are performed in a single batched pass,
+        making this fully parallel unlike the original sequential DiversityPhi.
+
+        Inspired by: "Particle Guidance: non-I.I.D. diverse sampling with
+        diffusion models" — repulsion is applied to noisy intermediates x_t
+        rather than finished samples.
+
+        Respects self.resampling_frequency.
+
+        Args:
+            x_T            : initial noise, shape (N, d_in)
+            guidance_scale : scalar controlling repulsion strength
+            context        : base context dict merged with per-step particle
+                             positions. If None, an empty dict is used.
+            verbose        : print progress every 100 steps
+
+        Returns:
+            x_0 : denoised samples, shape (N, d_in)
+        """
+        if context is None:
+            context = {}
+
+        x = x_T.clone().to(self.device)
+        N = x.shape[0]
+        T = self.scheduler.num_timesteps
+
+        for t in reversed(range(T)):
+            if verbose and t % 1 == 0:
+                print(f"  t = {t}")
+
+            use_guidance = (
+                    self.resampling_frequency > 0 and
+                    (t % self.resampling_frequency == 0)
+            )
+
+            # Posterior mean for all N particles — no grad needed here
+            t_vec = torch.full((N,), t, device=self.device, dtype=torch.long)
+            with torch.no_grad():
+                eps_hat = self.model(x, t_vec)
+                x0_hat = self.scheduler.reconstruct_x0(x, t_vec, eps_hat)
+                mu = self.scheduler.q_posterior(x0_hat, x, t_vec)  # (N, d_in)
+
+            if use_guidance:
+                grads = self._batched_particle_grad(x, t, context)  # (N, d_in)
+                var_t = self.scheduler.get_variance(t)
+                mu = mu + guidance_scale * var_t * grads
+
+            # Sample x_{t-1} from guided mean
+            noise = torch.zeros_like(x)
+            if t > 0:
+                noise = torch.randn_like(x)
+            var_t = self.scheduler.get_variance(t)
+            x = mu + (var_t ** 0.5) * noise
+
+        return x.detach()
+
+    def _batched_particle_grad(
+            self,
+            x: Tensor,
+            t: int,
+            context: dict,
+    ) -> Tensor:
+        """
+        Compute grad_{x^i} log S(x^i) for all N particles simultaneously,
+        where each particle's phi excludes itself from the library.
+
+        Builds phi_vals for all N particles in one pass, with each particle
+        i using the library x with index i excluded (via self_index in context).
+
+        Args:
+            x       : (N, d_in) current particle positions
+            t       : timestep
+            context : base context; "library" will be set to x, "self_index"
+                      set per particle
+
+        Returns:
+            grads : (N, d_in) repulsion gradients, detached
+        """
+        N, d_in = x.shape
+        x_req = x.detach().requires_grad_(True)
+
+        # Each particle i sees the full batch as library minus itself
+        phi_vals = self.phi.forward_batched(x_req, t, context)  # (N, d_out)
+
+        d_out = phi_vals.shape[1]
+        # print("Called")
+        #
+        # print(phi_vals.requires_grad)
+        # print(phi_vals.grad_fn)
+
+        if d_out == 1:
+            grad_phi = torch.autograd.grad(
+                phi_vals.squeeze(-1).sum(),
+                x_req,
+                create_graph=True,
+            )[0]  # (N, d_in)
+            grad_phi = grad_phi.clamp(-100.0, 100.0)
+            log_S = 2.0 * torch.log(
+                grad_phi.norm(dim=-1) + 1e-12
+            ).sum()
+            grads = torch.autograd.grad(log_S, x_req)[0]  # (N, d_in)
+
+        else:
+            rows = []
+            for i in range(d_out):
+                g = torch.autograd.grad(
+                    phi_vals[:, i].sum(),
+                    x_req,
+                    retain_graph=True,
+                    create_graph=True,
+                )[0]  # (N, d_in)
+                rows.append(g.clamp(-100.0, 100.0))
+
+            J = torch.stack(rows, dim=1)  # (N, d_out, d_in)
+            sv = torch.linalg.svdvals(J)
+            log_S = 2.0 * torch.log(sv + 1e-12).sum()
+            grads = torch.autograd.grad(log_S, x_req)[0]  # (N, d_in)
+
+        return grads.clamp(-100.0, 100.0).detach()
+
+    def sample_particle_resampling_guided(
+            self,
+            x_T: Tensor,
+            context: Optional[dict] = None,
+            verbose: bool = True,
+    ) -> Tensor:
+        """
+        Resampling-based particle guidance.
+
+        At each reverse timestep t, for each particle i:
+            1. Draw K candidates from the DDPM posterior
+            2. Score each candidate using phi with the library set to all
+               other particles' current positions at timestep t (self excluded)
+            3. Select the most salient candidate
+
+        All particles score against the same snapshot of x_t, making this
+        fully parallelisable with no sequential dependency across particles.
+
+        Respects self.resampling_frequency.
+
+        Args:
+            x_T     : initial noise, shape (N, d_in)
+            context : base context dict; "library" and "self_index" are set
+                      internally at each step and should not be passed in
+            verbose : print progress every 100 steps
+
+        Returns:
+            x_0 : denoised samples, shape (N, d_in)
+        """
+        if context is None:
+            context = {}
+
+        x = x_T.clone().to(self.device)
+        N = x.shape[0]
+        T = self.scheduler.num_timesteps
+
+        for t in reversed(range(T)):
+            if verbose and t % 100 == 0:
+                print(f"  t = {t}")
+
+            use_salience = (
+                    self.resampling_frequency > 0 and
+                    (t % self.resampling_frequency == 0)
+            )
+
+            # Draw K candidates for all N particles in one batched pass
+            with torch.no_grad():
+                candidates = self._batched_reverse_step(x, t)  # (N, K, d_in)
+
+            if use_salience:
+                # Score all N*K candidates, each particle excluding itself
+                # from the library. Library is the current snapshot x_t.
+                scores = self._batched_particle_salience(
+                    candidates, x, t, context
+                )  # (N, K)
+                best_idx = scores.argmax(dim=1)  # (N,)
+            else:
+                best_idx = torch.zeros(N, device=self.device, dtype=torch.long)
+
+            x = candidates[torch.arange(N, device=self.device), best_idx]
+
+        return x
+
+    def _batched_particle_salience(
+            self,
+            candidates: Tensor,
+            x_current: Tensor,
+            t: int,
+            context: dict,
+    ) -> Tensor:
+        """
+        Score all N*K candidates where each particle i uses the current
+        particle positions x_current as the library, excluding index i.
+
+        Args:
+            candidates : (N, K, d_in) — candidate next states
+            x_current  : (N, d_in)   — current particle positions (the library)
+            t          : timestep
+            context    : base context
+
+        Returns:
+            scores : (N, K)
+        """
+        N, K, d_in = candidates.shape
+        scores = torch.zeros(N, K, device=self.device)
+
+        for i in range(N):
+            # Build context for particle i: library is x_current, self excluded
+            ctx_i = {
+                **context,
+                "library": x_current,
+                "self_index": i,
+            }
+            for k in range(K):
+                scores[i, k] = log_salience(self.phi, candidates[i, k], t, ctx_i)
+
+        return scores
