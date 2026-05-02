@@ -12,9 +12,10 @@ saliency of a point x is defined by Loog (2005) as:
 where J_φ(x) is the Jacobian of φ at x. This is the Gram determinant of the
 Jacobian, measuring how much φ stretches the local volume around x.
 
-The sampling procedure is: at each reverse diffusion step t, draw K candidate
-next states from the DDPM posterior, score each by S(x), and keep the most
-salient. 
+The sampling procedure is: At each reverse diffusion step, compute a feature mapping φ, 
+evaluate the fixed information-theoretic salience functional Sφ, differentiate Sφ with 
+respect to the current diffusion state x_t, and add the resulting gradient as a guidance 
+term to the reverse update.
 
 ## Repository structure
 
