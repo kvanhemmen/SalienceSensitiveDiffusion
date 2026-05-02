@@ -41,6 +41,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torch import Tensor
+import torch.nn.functional as F
 
 from diffusion.scheduler import NoiseScheduler, reverse_step as ddpm_reverse_step
 
@@ -189,7 +190,7 @@ class SalientSampler:
         phi: PhiBase,
         K: int = 16,
         device: torch.device = torch.device("cpu"),
-        resampling_frequency: int = 1,
+        guidance_frequency: int = 1,
         batched: bool = False,
     ):
         self.model = model
@@ -197,7 +198,7 @@ class SalientSampler:
         self.phi = phi
         self.K = K
         self.device = device
-        self.resampling_frequency = resampling_frequency
+        self.guidance_frequency = guidance_frequency
         self.batched = batched
 
 
@@ -346,8 +347,8 @@ class SalientSampler:
                 print(f"  t = {t}")
 
             use_salience = (
-                    self.resampling_frequency > 0 and
-                    (t % self.resampling_frequency == 0)
+                    self.guidance_frequency > 0 and
+                    (t % self.guidance_frequency == 0)
             )
 
             if self.batched:
@@ -426,8 +427,8 @@ class SalientSampler:
                 print(f"  t = {t}")
 
             use_guidance = (
-                    self.resampling_frequency > 0 and
-                    (t % self.resampling_frequency == 0)
+                    self.guidance_frequency > 0 and
+                    (t % self.guidance_frequency == 0)
             )
 
             t_vec = torch.full((N,), t, device=self.device, dtype=torch.long)
@@ -632,8 +633,8 @@ class SalientSampler:
                 print(f"  t = {t}")
 
             use_guidance = (
-                    self.resampling_frequency > 0 and
-                    (t % self.resampling_frequency == 0)
+                    self.guidance_frequency > 0 and
+                    (t % self.guidance_frequency == 0)
             )
 
             # Posterior mean for all N particles — no grad needed here
@@ -762,8 +763,8 @@ class SalientSampler:
                 print(f"  t = {t}")
 
             use_salience = (
-                    self.resampling_frequency > 0 and
-                    (t % self.resampling_frequency == 0)
+                    self.guidance_frequency > 0 and
+                    (t % self.guidance_frequency == 0)
             )
 
             # Draw K candidates for all N particles in one batched pass
@@ -818,3 +819,98 @@ class SalientSampler:
                 scores[i, k] = log_salience(self.phi, candidates[i, k], t, ctx_i)
 
         return scores
+
+    def sample_particle_grad_classifier(
+            self,
+            x_T: Tensor,
+            classifier: nn.Module,
+            target_class: int,
+            diversity_scale: float = 1.0,
+            classifier_scale: float = 1.0,
+            context: Optional[dict] = None,
+            verbose: bool = True,
+    ) -> Tensor:
+        """
+        Combined diversity + classifier gradient guidance.
+
+        At each reverse timestep t:
+
+            mu_guided = mu_t
+                      + var_t * diversity_scale  * grad_{x_t} log S(x_t)
+                      + var_t * classifier_scale * grad_{x_t} log p(y | x_t, t)
+
+        The diversity gradient is computed via forward_batched for efficiency.
+        The classifier gradient pulls samples toward target_class.
+        Both are evaluated at the noisy intermediate x_t — the classifier
+        is time-conditioned so this is principled at all noise levels.
+
+        Respects self.guidance_frequency.
+
+        Args:
+            x_T              : initial noise, shape (N, d_in)
+            classifier       : trained NoisyClassifier
+            target_class     : integer class index to guide toward
+            diversity_scale  : lambda_div — scale for diversity gradient
+            classifier_scale : lambda_cls — scale for classifier gradient
+            context          : base context dict (optional)
+            verbose          : print progress every 100 steps
+
+        Returns:
+            x_0 : denoised samples, shape (N, d_in)
+        """
+
+        if context is None:
+            context = {}
+
+        x = x_T.clone().to(self.device)
+        N = x.shape[0]
+        T = self.scheduler.num_timesteps
+        target = torch.full((N,), target_class, device=self.device, dtype=torch.long)
+
+        for t in reversed(range(T)):
+            if verbose and t % 100 == 0:
+                print(f"  t = {t}")
+
+            use_guidance = (
+                    self.guidance_frequency > 0 and
+                    t % self.guidance_frequency == 0
+            )
+
+            t_vec = torch.full((N,), t, device=self.device, dtype=torch.long)
+
+            # Posterior mean — no grad needed for denoising step
+            with torch.no_grad():
+                eps_hat = self.model(x, t_vec)
+                x0_hat = self.scheduler.reconstruct_x0(x, t_vec, eps_hat)
+                mu = self.scheduler.q_posterior(x0_hat, x, t_vec)  # (N, d_in)
+
+            if use_guidance:
+                var_t = self.scheduler.get_variance(t)
+
+                # --- Diversity gradient ---
+                div_grads = self._batched_particle_grad(x, t, context)  # (N, d_in)
+
+                # --- Classifier gradient ---
+                x_in = x.detach().requires_grad_(True)
+                logits = classifier(x_in, t_vec)
+                log_probs = F.log_softmax(logits, dim=-1)
+                selected = log_probs[
+                    torch.arange(N, device=self.device), target
+                ]
+                cls_grads = torch.autograd.grad(
+                    selected.sum(), x_in
+                )[0].clamp(-100.0, 100.0).detach()  # (N, d_in)
+
+                # --- Combined update ---
+                mu = (mu
+                      + var_t * diversity_scale * div_grads
+                      + var_t * classifier_scale * cls_grads)
+
+            noise = torch.zeros_like(x)
+            if t > 0:
+                noise = torch.randn_like(x)
+            var_t = self.scheduler.get_variance(t)
+            x = mu + (var_t ** 0.5) * noise
+
+        return x.detach()
+
