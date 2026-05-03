@@ -248,6 +248,94 @@ class ScoreNormPhi(PhiBase):
 
 
 # ---------------------------------------------------------------------------
+# ScoreAlignmentPhi
+# ---------------------------------------------------------------------------
+
+class ScoreAlignmentPhi(PhiBase):
+    """
+    Scalar phi based on the mean cosine similarity between the score at x
+    and the scores at all other samples in the current batch.
+
+        phi(x^i) = (1/N-1) sum_{j != i} cos_sim(s_theta(x^i, t), s_theta(x^j, t))
+
+    where s_theta(x, t) = -eps_theta(x, t) / sqrt(1 - alpha_bar_t).
+
+    Salience S(x^i) = ||grad_{x^i} phi(x^i)||^2 is high at the boundary
+    between regions where x^i's score agrees with the batch and regions
+    where it disagrees — i.e. where small movements cause x^i's denoising
+    trajectory to rapidly diverge from or converge toward the consensus
+    direction of the rest of the batch.
+
+    This is distinct from:
+        DiversityPhi      -- measures where samples *are* relative to each other
+        ScoreNormPhi      -- measures the score field at each sample independently
+        ScoreAlignmentPhi -- measures the relationship between denoising
+                             *trajectories* across the batch
+
+    Uses forward_batched for efficiency — computing pairwise cosine
+    similarities requires the full batch.
+
+    Required context keys
+    ---------------------
+    "model"     : nn.Module  -- the denoising network
+    "scheduler" : NoiseScheduler
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: Tensor, t: int, context: dict) -> Tensor:
+        """
+        Single-sample forward -- returns zero since meaningful score
+        alignment requires at least two samples. Use forward_batched.
+
+        Args:
+            x : shape (d_in,)
+
+        Returns:
+            phi(x) : shape (1,) -- zero
+        """
+        return torch.zeros(1, device=x.device)
+
+    def forward_batched(self, X: Tensor, t: int, context: dict) -> Tensor:
+        """
+        Vectorised batched forward for ScoreAlignmentPhi.
+
+        Computes the mean cosine similarity between each sample's score
+        and all other samples' scores in one pass.
+
+        Args:
+            X : (N, d_in) -- batch of samples, gradient-enabled
+
+        Returns:
+            phi_vals : (N, 1)
+        """
+        model = context["model"]
+        scheduler = context["scheduler"]
+
+        N = X.shape[0]
+
+        # Compute score for all N samples: s_theta(x, t) = -eps / sqrt(1 - alpha_bar_t)
+        t_vec = torch.full((N,), t, device=X.device, dtype=torch.long)
+        eps_hat = model(X, t_vec)  # (N, d_in)
+
+        sqrt_one_minus_alpha_bar = scheduler.sqrt_one_minus_alphas_cumprod[t].to(X.device)
+        scores = -eps_hat / sqrt_one_minus_alpha_bar  # (N, d_in)
+
+        # Normalise scores for cosine similarity
+        scores_norm = scores / (scores.norm(dim=-1, keepdim=True) + 1e-12)  # (N, d_in)
+
+        # Pairwise cosine similarity matrix: (N, N)
+        cos_sim = scores_norm @ scores_norm.T  # (N, N)
+
+        # Mask diagonal (self-similarity) and take mean over N-1 others
+        mask = 1.0 - torch.eye(N, device=X.device)
+        phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)  # (N, 1)
+
+        return phi_vals
+
+
+# ---------------------------------------------------------------------------
 # TailnessLooPhi
 # ---------------------------------------------------------------------------
 

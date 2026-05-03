@@ -192,6 +192,7 @@ class SalientSampler:
         device: torch.device = torch.device("cpu"),
         guidance_frequency: int = 1,
         batched: bool = False,
+        normalize_salience_grad: bool = False,
     ):
         self.model = model
         self.scheduler = scheduler
@@ -200,7 +201,7 @@ class SalientSampler:
         self.device = device
         self.guidance_frequency = guidance_frequency
         self.batched = batched
-
+        self.normalize_salience_grad = normalize_salience_grad
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -529,7 +530,11 @@ class SalientSampler:
 
             grad_log_S = torch.autograd.grad(log_S, x_req)[0]  # (N, d_in)
 
-        return grad_log_S.clamp(-100.0, 100.0).detach()
+        grad_log_S = grad_log_S.clamp(-100.0, 100.0).detach()
+        if self.normalize_salience_grad:
+            grad_norm = grad_log_S.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            grad_log_S = grad_log_S / grad_norm
+        return grad_log_S
 
 
     def _salience_grad(
@@ -720,7 +725,11 @@ class SalientSampler:
             log_S = 2.0 * torch.log(sv + 1e-12).sum()
             grads = torch.autograd.grad(log_S, x_req)[0]  # (N, d_in)
 
-        return grads.clamp(-100.0, 100.0).detach()
+        grads = grads.clamp(-100.0, 100.0).detach()
+        if self.normalize_salience_grad:
+            grad_norm = grads.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            grads = grads / grad_norm
+        return grads
 
     def sample_particle_resampling_guided(
             self,
