@@ -291,7 +291,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
         Returns:
             grads : (N, C, H, W)
         """
-        Z_req = Z.detach().float().requires_grad_(True)
+        Z_req = Z.detach().to(Z.dtype).requires_grad_(True)
 
         phi_vals = self.phi.forward_batched(Z_req, t, context)    # (N, d_out)
         d_out = phi_vals.shape[1]
