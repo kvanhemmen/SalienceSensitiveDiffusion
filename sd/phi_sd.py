@@ -288,9 +288,10 @@ class ScoreAlignmentPhiSD(PhiBase):
                       use raw unconditional score.
     """
 
-    def __init__(self, conditional: bool = False):
+    def __init__(self, conditional: bool = False, normalize_grad: bool = True):
         super().__init__()
         self.conditional = conditional
+        self.normalize_grad = normalize_grad
 
     def forward(self, z: Tensor, t: int, context: dict) -> Tensor:
         """

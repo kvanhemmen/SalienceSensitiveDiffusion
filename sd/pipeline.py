@@ -326,7 +326,11 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
             log_S = 2.0 * torch.log(sv + 1e-12).sum()
             grad_log_S = torch.autograd.grad(log_S, Z_req)[0]
 
-        return grad_log_S.clamp(-100.0, 100.0).detach().to(Z.dtype)
+        grad_log_S = grad_log_S.clamp(-100.0, 100.0).detach().to(Z.dtype)
+        if getattr(self.phi, 'normalize_grad', False):
+            grad_norm = grad_log_S.reshape(Z.shape[0], -1).norm(dim=-1).clamp(min=1e-8)
+            grad_log_S = grad_log_S / grad_norm.reshape(-1, 1, 1, 1)
+        return grad_log_S
 
     @torch.enable_grad()
     def _single_salience_grad(
