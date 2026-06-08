@@ -188,6 +188,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                         **self.phi_context,
                         "unet": self.unet,
                         "scheduler": self.scheduler,
+                        "z_scaled": self.scheduler.scale_model_input(latents, t),
                     }
 
                     grad = self._compute_salience_gradient(latents, t_int, context)
