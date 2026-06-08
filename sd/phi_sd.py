@@ -407,34 +407,32 @@ class ScoreAlignmentPhiSD(PhiBase):
     #     return phi_vals
 
     def forward_batched(self, Z: Tensor, t: int, context: dict) -> Tensor:
-        """
-        Vectorised batched forward for ScoreAlignmentPhiSD.
-
-        Computes the mean cosine similarity between each latent's score
-        and all other latents' scores in one pass.
-
-        Scores are precomputed in the pipeline and passed via context
-        to avoid a second UNet forward pass which corrupts pipeline state.
-
-        Args:
-            Z : (N, C, H, W) — batch of N latent vectors
-
-        Returns:
-            phi_vals : (N, 1)
-        """
         N = Z.shape[0]
 
-        scores = context.get("precomputed_scores", None)
-        if scores is None:
-            raise ValueError(
-                "ScoreAlignmentPhiSD requires 'precomputed_scores' in context. "
-                "Ensure the pipeline computes scores before calling forward_batched."
-            )
+        # Reference scores — precomputed and detached, no UNet call needed
+        scores_ref = context.get("precomputed_scores", None)
+        if scores_ref is None:
+            raise ValueError("ScoreAlignmentPhiSD requires 'precomputed_scores' in context.")
 
-        scores_flat = scores.reshape(N, -1).detach()
-        scores_norm = scores_flat / (scores_flat.norm(dim=-1, keepdim=True) + 1e-12)
+        # Recompute query scores with grad for gradient flow through Z
+        unet = context["unet"]
+        scheduler = context["scheduler"]
+        null_embeds = context.get("null_embeds")
+        null_embeds_expanded = null_embeds.expand(N, -1, -1)
+        t_tensor = torch.tensor([t], device=Z.device, dtype=torch.long).repeat(N)
 
-        cos_sim = scores_norm @ scores_norm.T
+        eps_hat = unet(Z, t_tensor, encoder_hidden_states=null_embeds_expanded).sample
+        alpha_bar_t = scheduler.alphas_cumprod[t].to(Z.device)
+        sqrt_one_minus_alpha_bar = (1.0 - alpha_bar_t) ** 0.5
+        scores_q = (-eps_hat / sqrt_one_minus_alpha_bar).reshape(N, -1)
+        scores_q_norm = scores_q / (scores_q.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Reference scores detached
+        scores_ref_flat = scores_ref.reshape(N, -1).detach()
+        scores_ref_norm = scores_ref_flat / (scores_ref_flat.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Cosine similarity: grad flows through query scores only
+        cos_sim = scores_q_norm @ scores_ref_norm.T
         mask = 1.0 - torch.eye(N, device=Z.device)
         phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)
 
