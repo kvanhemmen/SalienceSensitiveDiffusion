@@ -76,6 +76,9 @@ def make_conditional_gmm(
             [9, 3.5],  # bottom
         ])
         mus = torch.cat([cls0_mus, cls1_mus], dim=0)
+        covs = torch.full((10, 2), cov_scale)
+        weights = torch.ones(10) / 10.0
+        labels = torch.tensor([0] * 5 + [1] * 5)
 
     elif shape == "separated":
         rng = torch.Generator()
@@ -85,13 +88,50 @@ def make_conditional_gmm(
         cls0_mus = torch.stack([rand(0.5, 3.5, 5), rand(1.0, 9.0, 5)], dim=1)
         cls1_mus = torch.stack([rand(6.5, 9.5, 5), rand(1.0, 9.0, 5)], dim=1)
         mus = torch.cat([cls0_mus, cls1_mus], dim=0)
+        covs = torch.full((10, 2), cov_scale)
+        weights = torch.ones(10) / 10.0
+        labels = torch.tensor([0] * 5 + [1] * 5)
 
+    elif shape == "submodal":
+        import math
+
+        ring_radius = 1.5
+        centre_weight = 0.65
+        sub_weight = 0.07
+
+        # Class 0 centred at (3, 5), Class 1 centred at (7, 5)
+        class_centres = [(3.5, 5.0), (6.5, 5.0)]
+        all_mus = []
+        all_weights = []
+        all_labels = []
+
+        for cls_idx, (cx, cy) in enumerate(class_centres):
+            # Central mode
+            all_mus.append([cx, cy])
+            all_weights.append(centre_weight / 2.0)  # divide by 2 for global weight
+            all_labels.append(cls_idx)
+
+            # 5 sub-modes evenly spaced on a ring
+            for k in range(5):
+                angle = 2 * math.pi * k / 5
+                all_mus.append([
+                    cx + ring_radius * math.cos(angle),
+                    cy + ring_radius * math.sin(angle),
+                ])
+                all_weights.append(sub_weight / 2.0)
+                all_labels.append(cls_idx)
+
+        mus = torch.tensor(all_mus, dtype=torch.float32)
+        covs = torch.cat([
+            torch.full((1, 2), cov_scale),  # central mode
+            torch.full((5, 2), cov_scale * 0.3),  # sub-modes class 0
+            torch.full((1, 2), cov_scale),  # central mode
+            torch.full((5, 2), cov_scale * 0.3),  # sub-modes class 1
+        ], dim=0)
+        weights = torch.tensor(all_weights)
+        labels = torch.tensor(all_labels)
     else:
-        raise ValueError(f"Unknown shape '{shape}'. Choose 'horseshoe' or 'separated'.")
-
-    covs    = torch.full((10, 2), cov_scale)
-    weights = torch.ones(10) / 10.0
-    labels  = torch.tensor([0]*5 + [1]*5)
+        raise ValueError(f"Unknown shape '{shape}'. Choose 'horseshoe', 'submodal' or 'separated'.")
 
     return ConditionalGaussianMixture(
         mus=mus, covs=covs, weights=weights, labels=labels, device=device,

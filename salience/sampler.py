@@ -102,6 +102,7 @@ class PhiBase(ABC, nn.Module):
 # Salience computation
 # ---------------------------------------------------------------------------
 
+@torch.enable_grad()
 def log_salience(
     phi: PhiBase,
     x: Tensor,

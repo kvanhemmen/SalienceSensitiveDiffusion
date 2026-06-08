@@ -165,24 +165,11 @@ class DiversityPhi(PhiBase):
         return vals.mean().unsqueeze(0)
 
     def forward_batched(self, X: Tensor, t: int, context: dict) -> Tensor:
-        """
-        Vectorised batched forward for DiversityPhi.
-
-        Computes all N phi values simultaneously using broadcasting
-        rather than a Python loop over samples and library entries.
-
-        Handles self-exclusion via the diagonal mask rather than
-        index-based slicing.
-        """
-        # All pairwise squared distances in one shot
+        N = X.shape[0]
         diff = X.unsqueeze(1) - X.unsqueeze(0)  # (N, N, d_in)
         dists = (diff ** 2).sum(dim=-1)  # (N, N)
-        #print(dists.requires_grad)
-
-        # Mask out self-distances (diagonal) instead of index exclusion
-        mask = 1.0 - torch.eye(X.shape[0], device=X.device)
-        phi_vals = (dists * mask).mean(dim=-1, keepdim=True)  # (N, 1)
-
+        mask = 1.0 - torch.eye(N, device=X.device)
+        phi_vals = (dists * mask).sum(dim=-1, keepdim=True) / (N - 1)  # (N, 1)
         return phi_vals
 
 
