@@ -300,6 +300,112 @@ class ScoreAlignmentPhiSD(PhiBase):
         """
         return torch.zeros(1, device=z.device)
 
+    # def forward_batched(self, Z: Tensor, t: int, context: dict) -> Tensor:
+    #     """
+    #     Vectorised batched forward for ScoreAlignmentPhiSD.
+    #
+    #     Computes the mean cosine similarity between each latent's score
+    #     and all other latents' scores in one pass.
+    #
+    #     Args:
+    #         Z : (N, C, H, W) — batch of N latent vectors
+    #
+    #     Returns:
+    #         phi_vals : (N, 1)
+    #     """
+    #     unet = context["unet"]
+    #     scheduler = context["scheduler"]
+    #
+    #     N = Z.shape[0]
+    #     t_tensor = torch.tensor([t], device=Z.device, dtype=torch.long).repeat(N)
+    #
+    #     # Use pre-scaled latents from pipeline to avoid calling scale_model_input again
+    #     Z_scaled = Z
+    #
+    #     if self.conditional:
+    #         guidance_scale = context["guidance_scale"]
+    #         prompt_embeds = context["prompt_embeds"]  # (2, seq, dim)
+    #
+    #         # Expand prompt embeds to match batch
+    #         uncond_embeds = prompt_embeds[:1].expand(N, -1, -1)   # (N, seq, dim)
+    #         cond_embeds = prompt_embeds[1:].expand(N, -1, -1)     # (N, seq, dim)
+    #         all_embeds = torch.cat([uncond_embeds, cond_embeds], dim=0)  # (2N, seq, dim)
+    #
+    #         Z_input = torch.cat([Z_scaled, Z_scaled], dim=0)      # (2N, C, H, W)
+    #         t_input = t_tensor.repeat(2)                           # (2N,)
+    #
+    #         noise_pred = unet(
+    #             Z_input, t_input,
+    #             encoder_hidden_states=all_embeds,
+    #         ).sample                                               # (2N, C, H, W)
+    #
+    #         noise_uncond, noise_text = noise_pred[:N], noise_pred[N:]
+    #         eps_hat = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+    #
+    #
+    #     else:
+    #
+    #         null_embeds = context.get("null_embeds", None)
+    #
+    #         if null_embeds is None:
+    #             raise ValueError(
+    #
+    #                 "ScoreAlignmentPhiSD requires 'null_embeds' in context "
+    #
+    #                 "for unconditional score computation."
+    #
+    #             )
+    #
+    #         null_embeds_expanded = null_embeds.expand(N, -1, -1)  # (N, seq, dim)
+    #
+    #         # Reference scores detached — library, no grad
+    #
+    #         with torch.no_grad():
+    #
+    #             eps_hat_ref = unet(
+    #
+    #                 Z_scaled.detach(), t_tensor,
+    #
+    #                 encoder_hidden_states=null_embeds_expanded,
+    #
+    #             ).sample
+    #
+    #         # Query scores with grad — gradient flows through these
+    #
+    #         eps_hat = unet(
+    #
+    #             Z_scaled, t_tensor,
+    #
+    #             encoder_hidden_states=null_embeds_expanded,
+    #
+    #         ).sample
+    #
+    #     alpha_bar_t = scheduler.alphas_cumprod[t].to(Z.device)
+    #
+    #     sqrt_one_minus_alpha_bar = (1.0 - alpha_bar_t) ** 0.5
+    #
+    #     # Reference scores detached
+    #
+    #     scores_ref = (-eps_hat_ref / sqrt_one_minus_alpha_bar).reshape(N, -1).detach()
+    #
+    #     scores_ref_norm = scores_ref / (scores_ref.norm(dim=-1, keepdim=True) + 1e-12)
+    #
+    #     # Query scores with grad
+    #
+    #     scores_q = (-eps_hat / sqrt_one_minus_alpha_bar).reshape(N, -1)
+    #
+    #     scores_q_norm = scores_q / (scores_q.norm(dim=-1, keepdim=True) + 1e-12)
+    #
+    #     # Cosine similarity: grad flows through query scores only
+    #
+    #     cos_sim = scores_q_norm @ scores_ref_norm.T
+    #
+    #     mask = 1.0 - torch.eye(N, device=Z.device)
+    #
+    #     phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)
+    #
+    #     return phi_vals
+
     def forward_batched(self, Z: Tensor, t: int, context: dict) -> Tensor:
         """
         Vectorised batched forward for ScoreAlignmentPhiSD.
@@ -307,101 +413,29 @@ class ScoreAlignmentPhiSD(PhiBase):
         Computes the mean cosine similarity between each latent's score
         and all other latents' scores in one pass.
 
+        Scores are precomputed in the pipeline and passed via context
+        to avoid a second UNet forward pass which corrupts pipeline state.
+
         Args:
             Z : (N, C, H, W) — batch of N latent vectors
 
         Returns:
             phi_vals : (N, 1)
         """
-        unet = context["unet"]
-        scheduler = context["scheduler"]
-
         N = Z.shape[0]
-        t_tensor = torch.tensor([t], device=Z.device, dtype=torch.long).repeat(N)
 
-        # Use pre-scaled latents from pipeline to avoid calling scale_model_input again
-        Z_scaled = Z
+        scores = context.get("precomputed_scores", None)
+        if scores is None:
+            raise ValueError(
+                "ScoreAlignmentPhiSD requires 'precomputed_scores' in context. "
+                "Ensure the pipeline computes scores before calling forward_batched."
+            )
 
-        if self.conditional:
-            guidance_scale = context["guidance_scale"]
-            prompt_embeds = context["prompt_embeds"]  # (2, seq, dim)
+        scores_flat = scores.reshape(N, -1).detach()
+        scores_norm = scores_flat / (scores_flat.norm(dim=-1, keepdim=True) + 1e-12)
 
-            # Expand prompt embeds to match batch
-            uncond_embeds = prompt_embeds[:1].expand(N, -1, -1)   # (N, seq, dim)
-            cond_embeds = prompt_embeds[1:].expand(N, -1, -1)     # (N, seq, dim)
-            all_embeds = torch.cat([uncond_embeds, cond_embeds], dim=0)  # (2N, seq, dim)
-
-            Z_input = torch.cat([Z_scaled, Z_scaled], dim=0)      # (2N, C, H, W)
-            t_input = t_tensor.repeat(2)                           # (2N,)
-
-            noise_pred = unet(
-                Z_input, t_input,
-                encoder_hidden_states=all_embeds,
-            ).sample                                               # (2N, C, H, W)
-
-            noise_uncond, noise_text = noise_pred[:N], noise_pred[N:]
-            eps_hat = noise_uncond + guidance_scale * (noise_text - noise_uncond)
-
-
-        else:
-
-            null_embeds = context.get("null_embeds", None)
-
-            if null_embeds is None:
-                raise ValueError(
-
-                    "ScoreAlignmentPhiSD requires 'null_embeds' in context "
-
-                    "for unconditional score computation."
-
-                )
-
-            null_embeds_expanded = null_embeds.expand(N, -1, -1)  # (N, seq, dim)
-
-            # Reference scores detached — library, no grad
-
-            with torch.no_grad():
-
-                eps_hat_ref = unet(
-
-                    Z_scaled.detach(), t_tensor,
-
-                    encoder_hidden_states=null_embeds_expanded,
-
-                ).sample
-
-            # Query scores with grad — gradient flows through these
-
-            eps_hat = unet(
-
-                Z_scaled, t_tensor,
-
-                encoder_hidden_states=null_embeds_expanded,
-
-            ).sample
-
-        alpha_bar_t = scheduler.alphas_cumprod[t].to(Z.device)
-
-        sqrt_one_minus_alpha_bar = (1.0 - alpha_bar_t) ** 0.5
-
-        # Reference scores detached
-
-        scores_ref = (-eps_hat_ref / sqrt_one_minus_alpha_bar).reshape(N, -1).detach()
-
-        scores_ref_norm = scores_ref / (scores_ref.norm(dim=-1, keepdim=True) + 1e-12)
-
-        # Query scores with grad
-
-        scores_q = (-eps_hat / sqrt_one_minus_alpha_bar).reshape(N, -1)
-
-        scores_q_norm = scores_q / (scores_q.norm(dim=-1, keepdim=True) + 1e-12)
-
-        # Cosine similarity: grad flows through query scores only
-
-        cos_sim = scores_q_norm @ scores_ref_norm.T
-
+        cos_sim = scores_norm @ scores_norm.T
         mask = 1.0 - torch.eye(N, device=Z.device)
-
         phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)
 
         return phi_vals

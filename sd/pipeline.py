@@ -191,6 +191,17 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                         "z_scaled": self.scheduler.scale_model_input(latents, t),
                     }
 
+                    # Compute scores once and pass to phi via context
+                    with torch.no_grad():
+                        t_vec = torch.full((latents.shape[0],), t_int, device=latents.device, dtype=torch.long)
+                        null_embeds = self.phi_context.get("null_embeds")
+                        if null_embeds is not None:
+                            null_exp = null_embeds.expand(latents.shape[0], -1, -1)
+                            eps = self.unet(latents, t_vec, encoder_hidden_states=null_exp).sample
+                            alpha_bar = self.scheduler.alphas_cumprod[t_int].to(latents.device)
+                            scores = -eps / (1.0 - alpha_bar) ** 0.5
+                            context["precomputed_scores"] = scores.detach()
+
                     grad = self._compute_salience_gradient(latents, t_int, context)
 
                     sqrt_1m_alpha = (
