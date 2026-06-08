@@ -51,6 +51,7 @@ from typing import Optional, List, Union, Callable, Dict, Any
 
 from diffusers import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
+from sd.phi_sd import ScoreAlignmentPhiSD
 
 from salience.sampler import PhiBase
 
@@ -202,7 +203,10 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                             scores = -eps / (1.0 - alpha_bar) ** 0.5
                             context["precomputed_scores"] = scores.detach()
 
-                    grad = self._compute_salience_gradient(latents, t_int, context)
+                    if isinstance(self.phi, ScoreAlignmentPhiSD):
+                        grad = self._scorealignment_salience_grad(latents, t_int, context)
+                    else:
+                        grad = self._compute_salience_gradient(latents, t_int, context)
 
                     sqrt_1m_alpha = (
                         1.0 - self.scheduler.alphas_cumprod[t]
@@ -393,3 +397,54 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
 
         grad_log_S, = torch.autograd.grad(log_S, z_req)
         return grad_log_S.clamp(-100.0, 100.0).detach().to(z.dtype)
+
+    @torch.enable_grad()
+    def _scorealignment_salience_grad(self, Z, t, context):
+        N = Z.shape[0]
+
+        # Reference scores already in context — detached
+        scores_ref = context["precomputed_scores"].reshape(N, -1).detach().float()
+        scores_ref_norm = scores_ref / (scores_ref.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Recompute query scores with grad, casting to float16 for UNet
+        Z_req = Z.detach().float().requires_grad_(True)
+
+        t_vec = torch.full((N,), t, device=Z.device, dtype=torch.long)
+        null_embeds = self.phi_context.get("null_embeds")
+        null_exp = null_embeds.expand(N, -1, -1)
+
+        # Cast Z_req to float16 for UNet, keeping grad graph
+        eps_hat = self.unet(
+            Z_req.half(), t_vec,
+            encoder_hidden_states=null_exp,
+        ).sample.float()
+
+        alpha_bar = self.scheduler.alphas_cumprod[t].to(Z.device).float()
+        scores_q = (-eps_hat / (1.0 - alpha_bar) ** 0.5).reshape(N, -1)
+        scores_q_norm = scores_q / (scores_q.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # phi = mean cosine similarity with reference scores
+        cos_sim = scores_q_norm @ scores_ref_norm.T
+        mask = 1.0 - torch.eye(N, device=Z.device)
+        phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)
+
+        # First derivative
+        grad_phi = torch.autograd.grad(
+            phi_vals.squeeze(-1).sum(), Z_req, create_graph=True
+        )[0]
+
+        # log S = log(norm_sq)
+        grad_phi_flat = grad_phi.reshape(N, -1)
+        norm_sq = (grad_phi_flat ** 2).sum(dim=-1).clamp(min=1e-8)
+        log_S = torch.log(norm_sq + 1e-8).sum()
+
+        # Second derivative
+        grad_log_S = torch.autograd.grad(log_S, Z_req)[0]
+
+        grad_log_S = grad_log_S.clamp(-100.0, 100.0).detach()
+        if self.phi.normalize_grad:
+            grad_norm = grad_log_S.reshape(N, -1).norm(dim=-1).clamp(min=1e-8)
+            grad_log_S = grad_log_S / grad_norm.reshape(-1, 1, 1, 1)
+            grad_log_S = grad_log_S.clamp(-1.0, 1.0)
+
+        return grad_log_S.to(Z.dtype)
