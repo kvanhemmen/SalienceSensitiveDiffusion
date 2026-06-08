@@ -320,7 +320,7 @@ class ScoreAlignmentPhiSD(PhiBase):
         t_tensor = torch.tensor([t], device=Z.device, dtype=torch.long).repeat(N)
 
         # Use pre-scaled latents from pipeline to avoid calling scale_model_input again
-        Z_scaled = context.get("z_scaled", Z)
+        Z_scaled = Z
 
         if self.conditional:
             guidance_scale = context["guidance_scale"]
