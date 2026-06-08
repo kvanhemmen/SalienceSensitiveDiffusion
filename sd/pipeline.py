@@ -317,11 +317,10 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                 create_graph=True,
             )[0]  # (N, C, H, W)
             print(f"grad_phi nan={grad_phi.isnan().any().item()} norm={grad_phi.norm().item():.4f}")
-            grad_phi_flat = grad_phi.reshape(Z_req.shape[0], -1).clamp(-100.0, 100.0)
+            grad_phi_flat = grad_phi.reshape(Z_req.shape[0], -1)
 
-            log_S = 2.0 * torch.log(
-                grad_phi_flat.norm(dim=-1) + 1e-12
-            ).sum()
+            norm_sq = (grad_phi_flat ** 2).sum(dim=-1).clamp(min=1e-8)
+            log_S = torch.log(norm_sq + 1e-8).sum()
             print(f"log_S nan={log_S.isnan().item()} val={log_S.item():.4f}")
 
             grad_log_S = torch.autograd.grad(log_S, Z_req)[0]  # (N, C, H, W)
