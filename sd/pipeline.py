@@ -330,6 +330,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
         if getattr(self.phi, 'normalize_grad', False):
             grad_norm = grad_log_S.reshape(Z.shape[0], -1).norm(dim=-1).clamp(min=1e-8)
             grad_log_S = grad_log_S / grad_norm.reshape(-1, 1, 1, 1)
+            grad_log_S = grad_log_S.clamp(-1.0, 1.0)
         return grad_log_S
 
     @torch.enable_grad()
