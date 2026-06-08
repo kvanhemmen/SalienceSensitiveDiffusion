@@ -344,36 +344,66 @@ class ScoreAlignmentPhiSD(PhiBase):
             noise_uncond, noise_text = noise_pred[:N], noise_pred[N:]
             eps_hat = noise_uncond + guidance_scale * (noise_text - noise_uncond)
 
+
         else:
+
             null_embeds = context.get("null_embeds", None)
+
             if null_embeds is None:
                 raise ValueError(
+
                     "ScoreAlignmentPhiSD requires 'null_embeds' in context "
+
                     "for unconditional score computation."
+
                 )
+
             null_embeds_expanded = null_embeds.expand(N, -1, -1)  # (N, seq, dim)
 
+            # Reference scores detached — library, no grad
+
+            with torch.no_grad():
+
+                eps_hat_ref = unet(
+
+                    Z_scaled.detach(), t_tensor,
+
+                    encoder_hidden_states=null_embeds_expanded,
+
+                ).sample
+
+            # Query scores with grad — gradient flows through these
+
             eps_hat = unet(
+
                 Z_scaled, t_tensor,
+
                 encoder_hidden_states=null_embeds_expanded,
-            ).sample                                               # (N, C, H, W)
 
-        # Score = -eps / sqrt(1 - alpha_bar_t)
+            ).sample
+
         alpha_bar_t = scheduler.alphas_cumprod[t].to(Z.device)
+
         sqrt_one_minus_alpha_bar = (1.0 - alpha_bar_t) ** 0.5
-        scores = -eps_hat / sqrt_one_minus_alpha_bar               # (N, C, H, W)
 
-        # Flatten scores for cosine similarity
-        scores_flat = scores.reshape(N, -1)                        # (N, C*H*W)
-        scores_norm = scores_flat / (
-            scores_flat.norm(dim=-1, keepdim=True) + 1e-12
-        )                                                          # (N, C*H*W)
+        # Reference scores detached
 
-        # Pairwise cosine similarity matrix: (N, N)
-        cos_sim = scores_norm @ scores_norm.T
+        scores_ref = (-eps_hat_ref / sqrt_one_minus_alpha_bar).reshape(N, -1).detach()
 
-        # Mask diagonal and take mean over N-1 others
+        scores_ref_norm = scores_ref / (scores_ref.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Query scores with grad
+
+        scores_q = (-eps_hat / sqrt_one_minus_alpha_bar).reshape(N, -1)
+
+        scores_q_norm = scores_q / (scores_q.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # Cosine similarity: grad flows through query scores only
+
+        cos_sim = scores_q_norm @ scores_ref_norm.T
+
         mask = 1.0 - torch.eye(N, device=Z.device)
-        phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)  # (N, 1)
+
+        phi_vals = (cos_sim * mask).sum(dim=-1, keepdim=True) / (N - 1)
 
         return phi_vals
