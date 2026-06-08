@@ -305,7 +305,9 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
         """
         Z_req = Z.detach().to(Z.dtype).requires_grad_(True)
 
-        phi_vals = self.phi.forward_batched(Z_req, t, context)    # (N, d_out)
+        phi_vals = self.phi.forward_batched(Z_req, t, context)  # (N, d_out)
+        print(
+            f"phi_vals nan={phi_vals.isnan().any().item()} min={phi_vals.min().item():.4f} max={phi_vals.max().item():.4f}")
         d_out = phi_vals.shape[1]
 
         if d_out == 1:
@@ -313,14 +315,17 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                 phi_vals.squeeze(-1).sum(),
                 Z_req,
                 create_graph=True,
-            )[0]                                                   # (N, C, H, W)
+            )[0]  # (N, C, H, W)
+            print(f"grad_phi nan={grad_phi.isnan().any().item()} norm={grad_phi.norm().item():.4f}")
             grad_phi_flat = grad_phi.reshape(Z_req.shape[0], -1).clamp(-100.0, 100.0)
 
             log_S = 2.0 * torch.log(
                 grad_phi_flat.norm(dim=-1) + 1e-12
             ).sum()
+            print(f"log_S nan={log_S.isnan().item()} val={log_S.item():.4f}")
 
-            grad_log_S = torch.autograd.grad(log_S, Z_req)[0]    # (N, C, H, W)
+            grad_log_S = torch.autograd.grad(log_S, Z_req)[0]  # (N, C, H, W)
+            print(f"grad_log_S nan={grad_log_S.isnan().any().item()}")
 
         else:
             rows = []
@@ -333,7 +338,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                 )[0]
                 rows.append(g.reshape(Z_req.shape[0], -1).clamp(-100.0, 100.0))
 
-            J = torch.stack(rows, dim=1)                          # (N, d_out, C*H*W)
+            J = torch.stack(rows, dim=1)  # (N, d_out, C*H*W)
             sv = torch.linalg.svdvals(J)
             log_S = 2.0 * torch.log(sv + 1e-12).sum()
             grad_log_S = torch.autograd.grad(log_S, Z_req)[0]
