@@ -303,7 +303,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
         Returns:
             grads : (N, C, H, W)
         """
-        Z_req = Z.detach().to(Z.dtype).requires_grad_(True)
+        Z_req = Z.detach().float().requires_grad_(True)
 
         phi_vals = self.phi.forward_batched(Z_req, t, context)  # (N, d_out)
         print(
@@ -317,7 +317,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                 create_graph=True,
             )[0]  # (N, C, H, W)
             print(f"grad_phi nan={grad_phi.isnan().any().item()} norm={grad_phi.norm().item():.4f}")
-            grad_phi_flat = grad_phi.reshape(Z_req.shape[0], -1)
+            grad_phi_flat = grad_phi.reshape(Z_req.shape[0], -1).float()  # force float32
 
             norm_sq = (grad_phi_flat ** 2).sum(dim=-1).clamp(min=1e-8)
             log_S = torch.log(norm_sq + 1e-8).sum()
