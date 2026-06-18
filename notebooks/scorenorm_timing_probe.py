@@ -31,8 +31,16 @@ pipe = SalienceGradSDPipeline.from_pretrained(
     MODEL_ID, torch_dtype=torch.float16, safety_checker=None,
 ).to(DEVICE)
 
+# Get null/unconditional embeddings for ScoreNormPhi's unconditional score computation
+null_embeds = pipe._encode_prompt(
+    prompt="",
+    device=DEVICE,
+    num_images_per_prompt=1,
+    do_classifier_free_guidance=False,
+)
+
 phi_norm = ScoreNormPhiSD()
-pipe.setup_phi(phi_norm, context={})
+pipe.setup_phi(phi_norm, context={"null_embeds": null_embeds})
 pipe.set_salience_scale(SAL_SCALE)
 pipe.set_guidance_frequency(1)
 
