@@ -18,6 +18,10 @@ from pathlib import Path
 from sd.pipeline import SalienceGradSDPipeline
 from sd.phi_sd import ScoreNormPhiSD
 
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
+
 DEVICE     = "cuda"
 MODEL_ID   = "runwayml/stable-diffusion-v1-5"
 OUTPUT_DIR = Path("../outputs/sd_experiment/scorenorm_scale_probe")
