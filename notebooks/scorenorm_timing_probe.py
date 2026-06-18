@@ -17,6 +17,8 @@ import torch
 from diffusers import StableDiffusionPipeline
 from sd.pipeline import SalienceGradSDPipeline
 from sd.phi_sd import ScoreNormPhiSD
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 torch.backends.cuda.enable_flash_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -27,7 +29,7 @@ MODEL_ID = "runwayml/stable-diffusion-v1-5"
 PROMPT   = "a green apple on a brown table"
 SAL_SCALE = 200.0  # same starting scale as DiversityPhi's first ablation point
 N_PROBE_STEPS = 5  # only run a handful of steps to measure timing
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 SEED = 2024
 
 print("Loading pipeline...")
