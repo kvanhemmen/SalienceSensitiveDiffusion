@@ -182,7 +182,7 @@ class SalienceGradSDPipeline(StableDiffusionPipeline):
                     noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
 
                 # Salience gradient guidance
-                if has_phi and guidance_frequency > 0 and (i % guidance_frequency == 0):
+                if has_phi and salience_scale != 0 and guidance_frequency > 0 and (i % guidance_frequency == 0):
                     t_int = int(t)
                     context = {
                         **self.phi_context,
