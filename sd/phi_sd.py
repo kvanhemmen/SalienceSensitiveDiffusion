@@ -23,7 +23,7 @@ DiversityPhiSD
     Same forward_batched mechanism as DiversityPhi in the GMM setting.
     Computes pairwise squared Euclidean distances between all N latents
     in the current batch, with diagonal masked for self-exclusion.
-    No external library — diversity is measured within the live batch.
+    No external library — diversity_sal200 is measured within the live batch.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class ScoreNormPhiSD(PhiBase):
         unet = context["unet"]
         scheduler = context["scheduler"]
 
-        z_b = z.unsqueeze(0)                                       # (1, C, H, W)
+        z_b = z.unsqueeze(0)  # (1, C, H, W)
         t_tensor = torch.tensor([t], device=z.device, dtype=torch.long)
 
         # Scale the latent input as SD expects
@@ -95,16 +95,16 @@ class ScoreNormPhiSD(PhiBase):
 
         if self.conditional:
             guidance_scale = context["guidance_scale"]
-            prompt_embeds = context["prompt_embeds"]               # (2, seq, dim)
+            prompt_embeds = context["prompt_embeds"]  # (2, seq, dim)
 
             # Duplicate for CFG: [unconditional, conditional]
-            z_input = torch.cat([z_scaled, z_scaled], dim=0)      # (2, C, H, W)
-            t_input = t_tensor.repeat(2)                           # (2,)
+            z_input = torch.cat([z_scaled, z_scaled], dim=0)  # (2, C, H, W)
+            t_input = t_tensor.repeat(2)  # (2,)
 
             noise_pred = unet(
-                z_input, t_input,
+                z_input.half(), t_input,
                 encoder_hidden_states=prompt_embeds,
-            ).sample                                               # (2, C, H, W)
+            ).sample.float()  # (2, C, H, W)
 
             noise_uncond, noise_text = noise_pred.chunk(2)
             eps_hat = noise_uncond + guidance_scale * (noise_text - noise_uncond)
@@ -118,16 +118,16 @@ class ScoreNormPhiSD(PhiBase):
                     "for unconditional score computation."
                 )
             eps_hat = unet(
-                z_scaled, t_tensor[0],
+                z_scaled.half(), t_tensor[0],
                 encoder_hidden_states=null_embeds,
-            ).sample                                               # (1, C, H, W)
+            ).sample.float()  # (1, C, H, W)
 
         # Score = -eps / sqrt(1 - alpha_bar_t)
         alpha_bar_t = scheduler.alphas_cumprod[t].to(z.device)
         sqrt_one_minus_alpha_bar = (1.0 - alpha_bar_t) ** 0.5
-        score = -eps_hat / sqrt_one_minus_alpha_bar                # (1, C, H, W)
+        score = -eps_hat / sqrt_one_minus_alpha_bar  # (1, C, H, W)
 
-        return score.norm().unsqueeze(0)                           # (1,)
+        return score.norm().unsqueeze(0)  # (1,)
 
     def forward_batched(self, Z: Tensor, t: int, context: dict) -> Tensor:
         """
@@ -203,17 +203,17 @@ class DiversityPhiSD(PhiBase):
     setting: pairwise squared Euclidean distances between all N latents
     in the current batch, with the diagonal masked out for self-exclusion.
 
-    There is no external library — diversity is measured within the live
+    There is no external library — diversity_sal200 is measured within the live
     batch of N latents at the current timestep t. This makes the method
     fully parallel: all N repulsion gradients are computed in one pass
     via forward_batched.
 
     The single-sample forward() falls back to zero (no signal) since
-    meaningful diversity requires at least two samples. It is only called
+    meaningful diversity_sal200 requires at least two samples. It is only called
     during sequential (non-batched) salience computation, which is not
     the intended use case for this phi.
 
-    No context keys required — diversity is computed purely from the
+    No context keys required — diversity_sal200 is computed purely from the
     batch structure passed to forward_batched.
     """
 
@@ -222,7 +222,7 @@ class DiversityPhiSD(PhiBase):
 
     def forward(self, z: Tensor, t: int, context: dict) -> Tensor:
         """
-        Single-sample forward — returns zero since diversity requires
+        Single-sample forward — returns zero since diversity_sal200 requires
         at least two samples. Use forward_batched for meaningful output.
 
         Args:
