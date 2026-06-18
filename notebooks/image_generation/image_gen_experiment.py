@@ -7,7 +7,7 @@ from sd.phi_sd import DiversityPhiSD
 
 DEVICE     = "cuda"
 MODEL_ID   = "runwayml/stable-diffusion-v1-5"
-OUTPUT_DIR = Path("outputs/sd_experiment")
+OUTPUT_DIR = Path("../outputs/sd_experiment")
 PROMPTS    = [
     "a green apple on a brown table",
     "a wooden chair in a blue room",
@@ -100,7 +100,7 @@ for prompt in PROMPTS:
     print(f"\nPrompt: {prompt}")
     generate(
         pipe, prompt,
-        save_dir=OUTPUT_DIR / "diversity" / prompt.replace(" ", "_"),
+        save_dir=OUTPUT_DIR / "diversity_sal200" / prompt.replace(" ", "_"),
         n=NUM_IMAGES, batch_size=BATCH_SIZE, seed=SEED,
     )
 
