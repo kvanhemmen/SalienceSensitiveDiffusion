@@ -31,13 +31,19 @@ pipe = SalienceGradSDPipeline.from_pretrained(
     MODEL_ID, torch_dtype=torch.float16, safety_checker=None,
 ).to(DEVICE)
 
-# Get null/unconditional embeddings for ScoreNormPhi's unconditional score computation
-null_embeds = pipe._encode_prompt(
-    prompt="",
-    device=DEVICE,
-    num_images_per_prompt=1,
-    do_classifier_free_guidance=False,
-)
+# Encode the null/empty prompt directly via tokenizer + text_encoder,
+# bypassing encode_prompt/_encode_prompt version differences entirely.
+with torch.no_grad():
+    null_input = pipe.tokenizer(
+        [""],
+        padding="max_length",
+        max_length=pipe.tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+    null_embeds = pipe.text_encoder(
+        null_input.input_ids.to(DEVICE)
+    )[0]  # (1, seq_len, embed_dim)
 
 phi_norm = ScoreNormPhiSD()
 pipe.setup_phi(phi_norm, context={"null_embeds": null_embeds})
