@@ -53,6 +53,7 @@ with torch.no_grad():
 
 phi_norm = ScoreNormPhiSD()
 pipe.setup_phi(phi_norm, context={"null_embeds": null_embeds})
+pipe.unet.enable_gradient_checkpointing()
 pipe.set_salience_scale(SAL_SCALE)
 pipe.set_guidance_frequency(1)
 
