@@ -18,6 +18,10 @@ from diffusers import StableDiffusionPipeline
 from sd.pipeline import SalienceGradSDPipeline
 from sd.phi_sd import ScoreNormPhiSD
 
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
+
 DEVICE   = "cuda"
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 PROMPT   = "a green apple on a brown table"
