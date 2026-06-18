@@ -29,7 +29,7 @@ MODEL_ID = "runwayml/stable-diffusion-v1-5"
 PROMPT   = "a green apple on a brown table"
 SAL_SCALE = 200.0  # same starting scale as DiversityPhi's first ablation point
 N_PROBE_STEPS = 5  # only run a handful of steps to measure timing
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 SEED = 2024
 
 print("Loading pipeline...")
