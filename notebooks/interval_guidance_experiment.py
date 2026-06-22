@@ -95,7 +95,7 @@ width  = pipe.unet.config.sample_size * pipe.vae_scale_factor
 
 latents = pipe.prepare_latents(
     NUM_IMAGES, num_channels, height, width,
-    prompt_embeds.dtype, DEVICE, generator, None,
+    prompt_embeds.dtype, torch.device(DEVICE), generator, None,
 )
 
 # Save decoded initial noise (t=500, step index 0)
